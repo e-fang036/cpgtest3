@@ -1,0 +1,400 @@
+from XGODogLib import xgolib
+from xgolib import XGO
+import time
+import math
+ 
+ 
+# ============================================================
+# XGO
+# ============================================================
+ 
+dog = XGO(port='/dev/ttyAMA0', version="xgolite")
+ 
+dog.motor_speed(50)
+ 
+ 
+# ============================================================
+# MOTOR IDs
+# ============================================================
+ 
+FL_HIP = 11
+FL_KNEE = 12
+ 
+FR_HIP = 21
+FR_KNEE = 22
+ 
+BR_HIP = 31
+BR_KNEE = 32
+ 
+BL_HIP = 41
+BL_KNEE = 42
+ 
+ 
+# ============================================================
+# CPG SETTINGS
+# ============================================================
+ 
+# External current.
+#
+# The paper uses I_ext to determine the operating region
+# of the neuron.
+#
+# We intentionally make the two groups slightly different
+# so that they don't start at exactly the same time.
+ 
+I_EXT_A = 1.20
+I_EXT_B = 1.00
+ 
+ 
+# Strength of inhibition between the two phases
+INHIBITION = -0.50
+ 
+ 
+# Neuron time constants
+TAU_FAST = 0.15
+TAU_SLOW = 0.80
+ 
+ 
+# Voltage at which we consider the neuron "bursting"
+BURST_THRESHOLD = 0.20
+ 
+ 
+# ============================================================
+# BIO-MIMETIC NEURON
+# ============================================================
+ 
+class Neuron:
+ 
+    def __init__(self, I_ext, initial_voltage=0.0):
+ 
+        self.I_ext = I_ext
+ 
+        self.v = initial_voltage
+ 
+        self.slow = 0.0
+ 
+        self.burst = False
+ 
+ 
+    def update(self, synaptic_input, dt):
+ 
+        # ----------------------------------------------------
+        # External + synaptic current
+        # ----------------------------------------------------
+ 
+        current = self.I_ext + synaptic_input
+ 
+ 
+        # ----------------------------------------------------
+        # Nonlinear current
+        # ----------------------------------------------------
+ 
+        nonlinear = math.tanh(self.v)
+ 
+ 
+        # ----------------------------------------------------
+        # Fast membrane dynamics
+        # ----------------------------------------------------
+ 
+        dv = (
+ 
+            current
+            - nonlinear
+            - self.slow
+            - self.v
+ 
+        ) / TAU_FAST
+ 
+ 
+        self.v += dv * dt
+ 
+ 
+        # ----------------------------------------------------
+        # Slow adaptation
+        # ----------------------------------------------------
+ 
+        dslow = (
+ 
+            self.v - self.slow
+ 
+        ) / TAU_SLOW
+ 
+ 
+        self.slow += dslow * dt
+ 
+ 
+        # ----------------------------------------------------
+        # Burst state
+        # ----------------------------------------------------
+ 
+        self.burst = self.v > BURST_THRESHOLD
+ 
+ 
+# ============================================================
+# CREATE THE FOUR NEURONS
+# ============================================================
+#
+# 0 = FL
+# 1 = FR
+# 2 = BR
+# 3 = BL
+#
+# FL + BR = Phase A
+# FR + BL = Phase B
+#
+ 
+neurons = [
+ 
+    Neuron(I_EXT_A,  0.15),   # FL
+ 
+    Neuron(I_EXT_B, -0.15),   # FR
+ 
+    Neuron(I_EXT_A,  0.15),   # BR
+ 
+    Neuron(I_EXT_B, -0.15),   # BL
+ 
+]
+ 
+ 
+# ============================================================
+# MOTOR FUNCTIONS
+# ============================================================
+ 
+def FL_lift():
+    dog.motor(FL_HIP, 10)
+    dog.motor(FL_KNEE, 10)
+ 
+ 
+def FL_push():
+    dog.motor(FL_HIP, 35)
+    dog.motor(FL_KNEE, 45)
+ 
+ 
+def FR_lift():
+    dog.motor(FR_HIP, 10)
+    dog.motor(FR_KNEE, 10)
+ 
+ 
+def FR_push():
+    dog.motor(FR_HIP, 35)
+    dog.motor(FR_KNEE, 45)
+ 
+ 
+def BR_lift():
+    dog.motor(BR_HIP, 10)
+    dog.motor(BR_KNEE, 10)
+ 
+ 
+def BR_push():
+    dog.motor(BR_HIP, 35)
+    dog.motor(BR_KNEE, 45)
+ 
+ 
+def BL_lift():
+    dog.motor(BL_HIP, 10)
+    dog.motor(BL_KNEE, 10)
+ 
+ 
+def BL_push():
+    dog.motor(BL_HIP, 35)
+    dog.motor(BL_KNEE, 45)
+ 
+ 
+# ============================================================
+# UPDATE MOTORS
+# ============================================================
+ 
+def update_motors():
+ 
+    # FL
+    if neurons[0].burst:
+        FL_lift()
+    else:
+        FL_push()
+ 
+ 
+    # FR
+    if neurons[1].burst:
+        FR_lift()
+    else:
+        FR_push()
+ 
+ 
+    # BR
+    if neurons[2].burst:
+        BR_lift()
+    else:
+        BR_push()
+ 
+ 
+    # BL
+    if neurons[3].burst:
+        BL_lift()
+    else:
+        BL_push()
+ 
+ 
+# ============================================================
+# CPG UPDATE
+# ============================================================
+ 
+def update_cpg(dt):
+ 
+    activities = []
+ 
+    for neuron in neurons:
+ 
+        if neuron.burst:
+            activities.append(1.0)
+ 
+        else:
+            activities.append(0.0)
+ 
+ 
+    # --------------------------------------------------------
+    # Synaptic inputs
+    #
+    # FL and BR inhibit FR and BL
+    #
+    # FR and BL inhibit FL and BR
+    # --------------------------------------------------------
+ 
+    synaptic = [0.0, 0.0, 0.0, 0.0]
+ 
+ 
+    # FL receives inhibition from FR + BL
+ 
+    synaptic[0] = (
+        INHIBITION * activities[1]
+        + INHIBITION * activities[3]
+    )
+ 
+ 
+    # FR receives inhibition from FL + BR
+ 
+    synaptic[1] = (
+        INHIBITION * activities[0]
+        + INHIBITION * activities[2]
+    )
+ 
+ 
+    # BR receives inhibition from FR + BL
+ 
+    synaptic[2] = (
+        INHIBITION * activities[1]
+        + INHIBITION * activities[3]
+    )
+ 
+ 
+    # BL receives inhibition from FL + BR
+ 
+    synaptic[3] = (
+        INHIBITION * activities[0]
+        + INHIBITION * activities[2]
+    )
+ 
+ 
+    # --------------------------------------------------------
+    # Update neurons
+    # --------------------------------------------------------
+ 
+    for i in range(4):
+ 
+        neurons[i].update(
+ 
+            synaptic[i],
+ 
+            dt
+ 
+        )
+ 
+ 
+# ============================================================
+# MAIN LOOP
+# ============================================================
+ 
+def run():
+ 
+    print("Starting CPG...")
+    print("Press CTRL+C to stop.")
+ 
+ 
+    last_time = time.monotonic()
+ 
+    last_print = 0
+ 
+ 
+    try:
+ 
+        while True:
+ 
+            now = time.monotonic()
+ 
+            dt = now - last_time
+ 
+            last_time = now
+ 
+ 
+            # Don't allow an enormous timestep
+ 
+            if dt > 0.05:
+ 
+                dt = 0.05
+ 
+ 
+            # ----------------------------------------------
+            # Update neural network
+            # ----------------------------------------------
+ 
+            update_cpg(dt)
+ 
+ 
+            # ----------------------------------------------
+            # Update motors
+            # ----------------------------------------------
+ 
+            update_motors()
+ 
+ 
+            # ----------------------------------------------
+            # Print neural state every ~0.2 seconds
+            # ----------------------------------------------
+ 
+            if now - last_print > 0.2:
+ 
+                print(
+ 
+                    "FL={:.2f}  FR={:.2f}  BR={:.2f}  BL={:.2f}"
+ 
+                    .format(
+ 
+                        neurons[0].v,
+                        neurons[1].v,
+                        neurons[2].v,
+                        neurons[3].v
+ 
+                    )
+ 
+                )
+ 
+                last_print = now
+ 
+ 
+            time.sleep(0.01)
+ 
+ 
+    except KeyboardInterrupt:
+ 
+        print("Stopping...")
+ 
+ 
+    finally:
+ 
+        dog.reset()
+ 
+ 
+# ============================================================
+# START
+# ============================================================
+ 
+run()
